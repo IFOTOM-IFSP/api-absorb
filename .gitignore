@@ -1,0 +1,47 @@
+# -------------------------------------------------------------------------
+# IGNORE DO PYTHON / AMBIENTES VIRTUAIS
+# -------------------------------------------------------------------------
+
+# Ignora a pasta do ambiente virtual (venv, env, etc.)
+venv/
+.venv/
+env/
+
+# Arquivos de bytecode e caches
+__pycache__/
+*.pyc
+
+# Arquivos gerados por testes (pytest, etc.)
+.pytest_cache/
+.tox/
+
+# -------------------------------------------------------------------------
+# IGNORE DA API / FASTAPI
+# -------------------------------------------------------------------------
+
+# Pasta temporária que você criou para salvar os uploads de imagem
+temp_uploads/
+
+# Arquivos de log gerados
+*.log
+
+# Arquivos de dados confidenciais (variáveis de ambiente, se você usar)
+.env
+.env.*
+
+# -------------------------------------------------------------------------
+# IGNORE DE NOTEBOOKS E IDEs
+# -------------------------------------------------------------------------
+
+# Ignora checkpoints de Colab/Jupyter
+.ipynb_checkpoints/
+
+# Ignora arquivos de configuração de usuário do VS Code (manter settings e launch é opcional)
+.vscode/
+
+# Arquivos de sistema do MacOS (se usar Mac)
+.DS_Store
+
+# Arquivos de dump/core
+*.bak
+*.swp

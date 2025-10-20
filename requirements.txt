@@ -1,0 +1,9 @@
+fastapi
+uvicorn 
+numpy
+matplotlib
+opencv-python-headless
+scikit-learn
+Pillow
+pillow-heif
+python-multipart 
