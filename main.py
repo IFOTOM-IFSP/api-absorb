@@ -6,40 +6,55 @@ import base64
 import shutil
 import time
 
-# --- Importações do FastAPI ---
+# --- Importações do FastAPI e Pydantic ---
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from starlette.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-# --- Importações científicas ---
+# --- Importações científicas (Inclui Scikit-learn para a lógica KMeans original) ---
 try:
-    # Apenas as libs essenciais (se a segmentação for feita por média, KMeans não é necessário)
     import cv2
+    from sklearn.cluster import KMeans # REINTRODUZIDO
     from PIL import Image
     from pillow_heif import register_heif_opener
     
-    # Configura o Pillow para suportar HEIC
     register_heif_opener()
 except ImportError as e:
     print(f"ERRO: Falta uma biblioteca essencial. Execute 'pip install -r requirements.txt'. Detalhe: {e}")
     exit()
 
 # =======================================================
-# --- CONFIGURAÇÕES GLOBAIS ---
+# --- CONFIGURAÇÕES GLOBAIS E MODELO ---
 # =======================================================
-MIN_WAVELENGTH = 400  # nm (Azul/Violeta)
-MAX_WAVELENGTH = 700  # nm (Vermelho)
+MIN_WAVELENGTH = 400
+MAX_WAVELENGTH = 700
 BLOCK_SIZE_SEGMENTATION = 12
 MAX_IMAGE_WIDTH = 800 # OTIMIZAÇÃO: Largura máxima para redimensionamento
 TEMP_DIR = "temp_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+class AnalysisResult(BaseModel):
+    """Modelo de dados retornado após a análise espectral."""
+    status: str = Field(..., description="Status da requisição (deve ser 'success').")
+    pico_lambda_nm: float = Field(..., description="Comprimento de onda (λ) onde ocorre o pico de absorbância (em nanômetros, nm).")
+    pico_absorbancia: float = Field(..., description="Valor máximo da absorbância (A) encontrado no espectro.")
+    plot_base64: str = Field(..., description="Imagem do gráfico de 4 painéis codificada em Base64 (PNG).")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "status": "success",
+                "pico_lambda_nm": 564.625,
+                "pico_absorbancia": 0.296,
+                "plot_base64": "..."
+            }
+        }
 
 # =======================================================
-# --- FUNÇÕES DE PROCESSAMENTO E IA OTIMIZADAS ---
+# --- FUNÇÕES DE PROCESSAMENTO E IA (LÓGICA ORIGINAL) ---
 # =======================================================
 
 def convert_heic_to_jpg_if_needed(image_path):
-    """Verifica se o arquivo é HEIC/HEIF e o converte para JPG."""
     if image_path.lower().endswith(('.heic', '.heif')):
         try:
             img_pil = Image.open(image_path)
@@ -52,7 +67,7 @@ def convert_heic_to_jpg_if_needed(image_path):
 
 
 def load_image(image_path):
-    """Carrega, converte BGR->RGB e REDIMENSIONA a imagem (OTIMIZAÇÃO DE VELOCIDADE)."""
+    """Carrega, converte BGR->RGB e REDIMENSIONA a imagem (OTIMIZAÇÃO: 800px)."""
     
     converted_path = convert_heic_to_jpg_if_needed(image_path)
     img_bgr = cv2.imread(converted_path)
@@ -67,7 +82,7 @@ def load_image(image_path):
         
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     
-    # --- OTIMIZAÇÃO CRUCIAL: Redução de Resolução (Máx 800px) ---
+    # --- OTIMIZAÇÃO CRUCIAL: Redução de Resolução ---
     h, w, _ = img_rgb.shape
     
     if w > MAX_IMAGE_WIDTH:
@@ -79,11 +94,9 @@ def load_image(image_path):
 
 
 def create_kmeans_segmentation(img_rgb, block_size):
-    """Segmentação RÁPIDA por Blocos usando a Média da Cor (OTIMIZADO)."""
+    """Segmentação de Cores por Blocos usando K-Means (LÓGICA ORIGINAL)."""
     h, w, _ = img_rgb.shape
     segmented_img = np.zeros_like(img_rgb)
-
-    if block_size <= 0: return img_rgb
 
     for y in range(0, h, block_size):
         for x in range(0, w, block_size):
@@ -92,9 +105,24 @@ def create_kmeans_segmentation(img_rgb, block_size):
             block_rgb = img_rgb[y:y_end, x:x_end]
 
             if block_rgb.size > 0:
-                # CÁLCULO DE MÉDIA SIMPLES (MUITO MAIS RÁPIDO)
-                average_color = np.mean(block_rgb, axis=(0, 1)).astype(np.uint8)
-                segmented_img[y:y_end, x:x_end] = average_color
+                block_hsv = cv2.cvtColor(block_rgb, cv2.COLOR_RGB2HSV)
+                pixels_hsv = block_hsv.reshape((-1, 3))
+
+                # Reintrodução da lógica K-Means original (pode ser lenta)
+                kmeans_block = KMeans(n_clusters=1, random_state=0, n_init=1, max_iter=10)
+
+                try:
+                    kmeans_block.fit(pixels_hsv)
+                    dominant_hsv = kmeans_block.cluster_centers_.astype(np.uint8)
+                    dominant_hsv_3d = dominant_hsv.reshape((1, 1, 3))
+                    dominant_rgb_3d = cv2.cvtColor(dominant_hsv_3d, cv2.COLOR_HSV2RGB)
+                    dominant_rgb = dominant_rgb_3d.reshape((3,))
+
+                    segmented_img[y:y_end, x:x_end] = dominant_rgb
+                except (ValueError, RuntimeError):
+                    # Fallback para cor média
+                    average_color = np.mean(block_rgb, axis=(0, 1)).astype(np.uint8)
+                    segmented_img[y:y_end, x:x_end] = average_color
 
     return segmented_img
 
@@ -102,6 +130,7 @@ def create_kmeans_segmentation(img_rgb, block_size):
 def analyze_spectrum_profile(img_rgb):
     """Extrai o perfil de intensidade (Canal V do HSV)."""
     h, w, _ = img_rgb.shape
+
     img_hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
     v_channel = img_hsv[:, :, 2]
 
@@ -118,6 +147,7 @@ def analyze_spectrum_profile(img_rgb):
 
     intensity_profile = np.mean(spectral_band, axis=0)
     intensity_profile = intensity_profile / 255.0 * 100
+
     return intensity_profile
 
 
@@ -137,26 +167,30 @@ def create_plot_buffer(img_rgb, segmented_img, profile_sample, pico_lambda, pico
     # --- PLOTAGEM ---
     plt.figure(figsize=(18, 10))
 
+    # Plot 1: Imagem Original
     plt.subplot(2, 2, 1)
     plt.imshow(img_rgb)
     plt.title("1A. Imagem Original do Espectro")
     plt.axis('off')
 
+    # Plot 2: Imagem Segmentada (Lógica KMeans Original)
     plt.subplot(2, 2, 2)
     plt.imshow(segmented_img)
-    plt.title("1B. IA Decodificando Cores (Segmentação Rápida)")
+    plt.title("1B. IA Decodificando Cores (Segmentação K-Means)")
     plt.axis('off')
 
+    # Plot 3: Perfil de Intensidade (I e I₀)
     plt.subplot(2, 2, 3)
-    plt.plot(lambdas_eixo_x, profile_blank, label='I₀ (Referência)', color='gray', linestyle='--')
+    plt.plot(lambdas_eixo_x, profile_blank, label='I₀ (Referência - 95%)', color='gray', linestyle='--')
     plt.plot(lambdas_eixo_x, profile_sample, label='I (Amostra)', color='blue')
-    plt.title('2A. Perfil de Intensidade Espectral (I e I₀)', fontsize=14)
+    plt.title('2A. Perfil de Intensidade Espectral', fontsize=14)
     plt.xlabel('Comprimento de Onda (λ em nm)')
     plt.ylabel('Intensidade de Luz (% Brilho)')
     plt.legend()
     plt.grid(True)
-    plt.ylim(0, 105)
+    plt.ylim(0, 105) # Mantém a escala de 0 a 105%
 
+    # Plot 4: Espectro de Absorbância
     plt.subplot(2, 2, 4)
     plt.plot(lambdas_eixo_x, A_bruta, label='Absorbância Bruta (-log(T))', color='red')
 
@@ -165,11 +199,12 @@ def create_plot_buffer(img_rgb, segmented_img, profile_sample, pico_lambda, pico
     pico_absorbancia_plot = A_bruta[max_A_index]
     
     plt.scatter(pico_lambda_plot, pico_absorbancia_plot, color='black', s=100)
-    plt.annotate(f"Pico: {pico_lambda_plot:.1f} nm", (pico_lambda_plot, pico_absorbancia_plot),
+    plt.annotate(f"Pico: {pico_lambda_plot:.1f} nm\nA: {pico_absorbancia_plot:.3f}", 
+                 (pico_lambda_plot, pico_absorbancia_plot),
                  textcoords="offset points", xytext=(-20, 20), ha='left',
                  fontsize=10, weight='bold', bbox=dict(boxstyle="round,pad=0.3", fc="yellow", alpha=0.5))
 
-    plt.title('2B. Espectro de Absorbância Bruta', fontsize=14)
+    plt.title('2B. Espectro de Absorbância Bruta (Resultado Final)', fontsize=14)
     plt.xlabel('Comprimento de Onda (λ em nm)')
     plt.ylabel('Absorbância (A)')
     plt.legend()
@@ -216,34 +251,44 @@ def perform_analysis(img_rgb):
 
 
 # =======================================================
-# --- CONFIGURAÇÃO DA API FASTAPI ---
+# --- CONFIGURAÇÃO E ROTAS DA API FASTAPI ---
 # =======================================================
 
 app = FastAPI(
     title="IFOTOM - Espectroscopia de Imagem API",
-    description="API de Visão Computacional e IA para análise de espectros de absorbância em imagens."
+    version="1.0.0",
+    description="""
+    🚀 **API de Alto Desempenho** para Análise Espectral (Método Colorimétrico).
+    
+    Esta API utiliza Visão Computacional (OpenCV) e análise matemática para processar imagens de espectros 
+    e calcular o pico de absorbância (A) e o comprimento de onda (λ) associado.
+    
+    ### Endpoint Principal
+    * `POST /analyze`: Recebe o arquivo e retorna o resultado.
+    """
 )
 
 @app.get("/")
 async def root():
-    """Rota raiz para verificar se a API está online."""
+    """Rota raiz para verificar o status da API."""
     return {
         "message": "API IFOTOM está Online. Acesse /docs para testar o endpoint de análise.",
-        "endpoint_de_analise": "/analyze"
+        "status": "Online"
     }
 
-@app.post("/analyze")
+@app.post("/analyze", response_model=AnalysisResult, tags=["Análise Espectral"])
 async def analyze_image_endpoint(file: UploadFile = File(
     None, 
     description="Arquivo de imagem (JPG, PNG, HEIC) do espectro."
 )):
     """
-    Recebe um arquivo de imagem e retorna o pico de absorbância e o gráfico de análise.
+    Processa a imagem, executa a análise espectral e retorna os dados do pico e o gráfico.
     """
     
     if file is None:
          raise HTTPException(status_code=400, detail="Nenhum arquivo 'file' enviado.")
 
+    # Gera um nome de arquivo único para evitar conflitos em requests simultâneas
     unique_filename = f"{time.time()}_{file.filename}"
     temp_path = os.path.join(TEMP_DIR, unique_filename)
     
@@ -252,33 +297,31 @@ async def analyze_image_endpoint(file: UploadFile = File(
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # 2. Executa a Análise (inclui Redimensionamento e IA)
+        # 2. Executa a Análise (inclui Redimensionamento e IA/KMeans)
         img_rgb = load_image(temp_path)
         result = perform_analysis(img_rgb)
 
-        # 3. Prepara a Resposta JSON
+        # 3. Prepara a Resposta
         response_data = {
             "status": "success",
             "pico_lambda_nm": result['pico_lambda'],
             "pico_absorbancia": result['pico_absorbancia'],
-            # Converte a imagem (plot_buffer) para Base64
             "plot_base64": base64.b64encode(result['plot_buffer'].read()).decode('utf-8')
         }
         
         return JSONResponse(content=response_data)
 
     except FileNotFoundError:
-        raise HTTPException(status_code=400, detail="Arquivo não encontrado no disco (verifique o formato).")
+        raise HTTPException(status_code=400, detail="Arquivo não encontrado ou formato inválido.")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Erro de processamento nos dados: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro interno da API: {e}. Confirme se as dependências estão instaladas.")
+        raise HTTPException(status_code=500, detail=f"Erro interno da API: {e}. Confirme as dependências.")
     finally:
-        # 4. Limpeza: Garante que os arquivos temporários são removidos
+        # 4. Limpeza
         try:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            # Limpa o JPG convertido (se foi HEIC)
             jpg_temp_path = temp_path.rsplit('.', 1)[0] + '.jpg'
             if os.path.exists(jpg_temp_path):
                 os.remove(jpg_temp_path)
