@@ -30,8 +30,7 @@ COPY . .
 EXPOSE $PORT
 
 # --- Comando de Execução Dinâmico ---
-# ATUALIZAÇÃO CRÍTICA: Em vez de '--port 8000', usamos '--port $PORT'.
-# O shell dentro do contêiner substituirá $PORT pelo valor da variável de ambiente (ex: 8080)
-# que o Google Cloud Run fornecerá quando iniciar o contêiner.
+# CORREÇÃO CRÍTICA: Mudado para a "forma shell" (sem colchetes) para permitir
+# a substituição da variável de ambiente $PORT.
 CMD uvicorn main:app --host 0.0.0.0 --port $PORT
 
